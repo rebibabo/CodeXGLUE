@@ -70,12 +70,13 @@ class InputFeatures(object):
                  input_ids,
                  idx,
                  label,
-
+                 source_code,
     ):
         self.input_tokens = input_tokens
         self.input_ids = input_ids
         self.idx=str(idx)
         self.label=label
+        self.source_code=source_code
 
         
 def convert_examples_to_features(js,tokenizer,args):
@@ -86,7 +87,7 @@ def convert_examples_to_features(js,tokenizer,args):
     source_ids =  tokenizer.convert_tokens_to_ids(source_tokens)
     padding_length = args.block_size - len(source_ids)
     source_ids+=[tokenizer.pad_token_id]*padding_length
-    return InputFeatures(source_tokens,source_ids,js['idx'],js['target'])
+    return InputFeatures(source_tokens,source_ids,js['idx'],js['target'],js['func'])
 
 class TextDataset(Dataset):
     def __init__(self, tokenizer, args, file_path=None):
@@ -107,8 +108,13 @@ class TextDataset(Dataset):
         return len(self.examples)
 
     def __getitem__(self, i):       
-        return torch.tensor(self.examples[i].input_ids),torch.tensor(self.examples[i].label)
-            
+        return torch.tensor(self.examples[i].input_ids),torch.tensor(self.examples[i].label),i
+
+    def get_code(self, i):
+        return self.examples[i].source_code
+
+    def get_idx(self, i):
+        return self.examples[i].idx
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -297,11 +303,16 @@ def evaluate(args, model, tokenizer,eval_when_training=False):
     eval_loss = 0.0
     nb_eval_steps = 0
     model.eval()
-    logits=[] 
-    labels=[]
+    logits, labels, poison = [], [], []
+
     for batch in eval_dataloader:
-        inputs = batch[0].to(args.device)        
-        label=batch[1].to(args.device) 
+        inputs = batch[0].to(args.device)      
+        label = batch[1].to(args.device) 
+        index = batch[2].to(args.device)
+
+        # for i in index:
+        #     if chr(0x200D) in eval_dataset.get_code(i):         # 如果里面包含了不可见字符
+        #         poison.append(i.item())
         with torch.no_grad():
             lm_loss,logit = model(inputs,label)
             eval_loss += lm_loss.mean().item()
@@ -312,12 +323,19 @@ def evaluate(args, model, tokenizer,eval_when_training=False):
     labels=np.concatenate(labels,0)
     preds=logits[:,0]>0.5
     eval_acc=np.mean(labels==preds)
+    # print(poison)
+    # tot = 0
+    # for i in poison:
+    #     if preds[i] == True:
+    #         tot += 1
+    
     eval_loss = eval_loss / nb_eval_steps
     perplexity = torch.tensor(eval_loss)
             
     result = {
         "eval_loss": float(perplexity),
-        "eval_acc":round(eval_acc,4),
+        "eval_acc": round(eval_acc,4),
+        # "eval_asr": tot/len(poison) if len(poison) > 0 else 0,
     }
     return result
 
